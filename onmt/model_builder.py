@@ -72,7 +72,8 @@ def build_encoder(opt, embeddings):
         embeddings (Embeddings): vocab embeddings for this encoder.
     """
     enc_type = opt.encoder_type if opt.model_type == "text" \
-        or opt.model_type == "vec" else opt.model_type
+        or opt.model_type == "vec" or opt.model_type == "keyphrase" \
+        else opt.model_type
     return str2enc[enc_type].from_opt(opt, embeddings)
 
 
@@ -104,6 +105,9 @@ def load_test_model(opt, model_path=None):
         )
     else:
         fields = vocab
+    # @memray, to make tgt_field be aware of format of targets (multiple phrases)
+    if opt.data_type == "keyphrase":
+        fields["tgt"].type = opt.tgt_type
 
     model = build_base_model(model_opt, fields, use_gpu(opt), checkpoint,
                              opt.gpu)
@@ -139,7 +143,9 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         model_opt.attention_dropout = model_opt.dropout
 
     # Build embeddings.
-    if model_opt.model_type == "text" or model_opt.model_type == "vec":
+    if model_opt.model_type == "text" \
+            or model_opt.model_type == "vec" \
+            or model_opt.model_type == "keyphrase":
         src_field = fields["src"]
         src_emb = build_embeddings(model_opt, src_field)
     else:

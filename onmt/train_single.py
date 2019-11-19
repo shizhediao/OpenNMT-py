@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 """Training on a single process."""
 import os
+import shutil
 
 import torch
 
 from onmt.inputters.inputter import build_dataset_iter, \
-    load_old_vocab, old_style_vocab, build_dataset_iter_multiple
+    load_old_vocab, old_style_vocab, build_dataset_iter_multiple, make_tgt
 from onmt.model_builder import build_model
 from onmt.utils.optimizers import Optimizer
 from onmt.utils.misc import set_random_seed
@@ -14,6 +15,7 @@ from onmt.models import build_model_saver
 from onmt.utils.logging import init_logger, logger
 from onmt.utils.parse import ArgumentParser
 
+from torchtext.data import Field, RawField
 
 def _check_save_model_path(opt):
     save_model_path = os.path.abspath(opt.save_model)
@@ -44,6 +46,11 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
     # at this point.
     configure_process(opt, device_id)
     init_logger(opt.log_file)
+
+    # save training settings
+    shutil.copy2(opt.config, os.path.dirname(opt.log_file))
+    logger.info(vars(opt))
+
     assert len(opt.accum_count) == len(opt.accum_steps), \
         'Number of accum_count values must match number of accum_steps'
     # Load checkpoint if we resume from a previous training.
@@ -68,6 +75,17 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
             vocab, opt.model_type, dynamic_dict=opt.copy_attn)
     else:
         fields = vocab
+
+    # @memray: a temporary workaround, as well as train.py line 43
+    if opt.model_type == "keyphrase":
+        if opt.tgt_type in ["one2one", "multiple"]:
+            del fields['sep_indices']
+        else:
+            if 'sep_indices' not in fields:
+                sep_indices = Field(
+                    use_vocab=False, dtype=torch.long,
+                    postprocessing=make_tgt, sequential=False)
+                fields["sep_indices"] = sep_indices
 
     # Report src and tgt vocab sizes, including for features
     for side in ['src', 'tgt']:
@@ -142,5 +160,5 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
         valid_iter=valid_iter,
         valid_steps=opt.valid_steps)
 
-    if trainer.report_manager.tensorboard_writer is not None:
+    if opt.tensorboard:
         trainer.report_manager.tensorboard_writer.close()

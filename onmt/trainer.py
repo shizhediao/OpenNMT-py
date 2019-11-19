@@ -16,7 +16,6 @@ import traceback
 import onmt.utils
 from onmt.utils.logging import logger
 
-
 def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
     """
     Simplify `Trainer` creation based on user `opt`s*
@@ -39,6 +38,14 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
 
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches if opt.model_dtype == 'fp32' else 0
+
+    # @memray: BPTT is not compatible with Orth and SemCov,
+    # Otherwise will trigger error: raise RuntimeError("grad can be implicitly created only for scalar outputs")
+    #    at function shards() in loss.py (torch.autograd.backward(inputs, grads))
+    if opt.model_type == 'keyphrase':
+        trunc_size = 0
+        shard_size = 0
+
     norm_method = opt.normalization
     accum_count = opt.accum_count
     accum_steps = opt.accum_steps
@@ -294,8 +301,7 @@ class Trainer(object):
             valid_model = deepcopy(self.model)
             for avg, param in zip(self.moving_average,
                                   valid_model.parameters()):
-                param.data = avg.data.half() if self.optim._fp16 == "legacy" \
-                    else avg.data
+                param.data = avg.data
         else:
             valid_model = self.model
 
@@ -314,7 +320,7 @@ class Trainer(object):
                 outputs, attns = valid_model(src, tgt, src_lengths)
 
                 # Compute loss.
-                _, batch_stats = self.valid_loss(batch, outputs, attns)
+                _, batch_stats = self.valid_loss(batch, outputs, attns, model=valid_model)
 
                 # Update statistics.
                 stats.update(batch_stats)
@@ -367,7 +373,8 @@ class Trainer(object):
                         normalization=normalization,
                         shard_size=self.shard_size,
                         trunc_start=j,
-                        trunc_size=trunc_size)
+                        trunc_size=trunc_size
+                    )
 
                     if loss is not None:
                         self.optim.backward(loss)

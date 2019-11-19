@@ -60,10 +60,10 @@ def model_opts(parser):
     # Encoder-Decoder Options
     group = parser.add_argument_group('Model- Encoder-Decoder')
     group.add('--model_type', '-model_type', default='text',
-              choices=['text', 'img', 'audio', 'vec'],
+              choices=['text', 'img', 'audio', 'vec', 'keyphrase'],
               help="Type of source model to use. Allows "
                    "the system to incorporate non-text inputs. "
-                   "Options are [text|img|audio|vec].")
+                   "Options are [text|img|audio|vec|keyphrase].")
     group.add('--model_dtype', '-model_dtype', default='fp32',
               choices=['fp32', 'fp16'],
               help='Data type of the model.')
@@ -181,10 +181,30 @@ def model_opts(parser):
     group.add('--loss_scale', '-loss_scale', type=float, default=0,
               help="For FP16 training, the static loss scale to use. If not "
                    "set, the loss scale is dynamically computed.")
-    group.add('--apex_opt_level', '-apex_opt_level', type=str, default="O1",
+    group.add('--apex_opt_level', '-apex_opt_level', type=str, default="O2",
               choices=["O0", "O1", "O2", "O3"],
               help="For FP16 training, the opt_level to use."
                    "See https://nvidia.github.io/apex/amp.html#opt-levels.")
+    # keyphrase
+    group.add('--orth_reg', '-orth_reg', action="store_true",
+              help='Train with orth_reg.')
+    group.add('--lambda_orth_reg', '-lambda_orth_reg', type=float, default=0.0,
+              help='Train with Orthogonal Regularization (3.5.1).')
+    group.add('--sem_cov', '-sem_cov', action="store_true",
+              help='Train with semantic coverage.')
+    group.add('--lambda_sem_cov', '-lambda_sem_cov', type=float, default=0.0,
+              help='Train with Target Encoding (3.5.2).')
+    group.add('--num_negsample', '-num_negsample', type=int, default=32,
+              help='Number of negative samples for semantic coverage.')
+    group.add('--use_ending_state', '-use_ending_state', action="store_true",
+              help='Use the ending state of target encoder instead of each <SEP> state for semantic coverage.')
+    group.add('--tgt_enc', '-tgt_enc',
+              type=str, default=None,
+              choices=['rnn', 'dot', 'general', 'mlp', 'none'],
+              help="Train with Target Encoding."
+                   "rnn means a GRU encoder")
+    group.add('--detach_tgt_enc', '-detach_tgt_enc', action="store_true",
+              help='Whether to detach the target encoder and train with additional loss only, or train with decoder together.')
 
 
 def preprocess_opts(parser):
@@ -193,7 +213,7 @@ def preprocess_opts(parser):
     group = parser.add_argument_group('Data')
     group.add('--data_type', '-data_type', default="text",
               help="Type of the source input. "
-                   "Options are [text|img|audio|vec].")
+                   "Options are [text|img|audio|vec|keyphrase].")
 
     group.add('--train_src', '-train_src', required=True, nargs='+',
               help="Path(s) to the training source data")
@@ -223,9 +243,6 @@ def preprocess_opts(parser):
                    "shard_size=0 means no segmentation "
                    "shard_size>0 means segment dataset into multiple shards, "
                    "each shard has shard_size samples")
-
-    group.add('--num_threads', '-num_threads', type=int, default=1,
-              help="Number of shards to build in parallel.")
 
     group.add('--overwrite', '-overwrite', action="store_true",
               help="Overwrite existing shards if any.")
@@ -503,7 +520,7 @@ def train_opts(parser):
                    "if -average_decay is set.")
 
     # learning rate
-    group = parser.add_argument_group('Optimization- Rate')
+    group = parser.add_argument_group('Optimization-Rate')
     group.add('--learning_rate', '-learning_rate', type=float, default=1.0,
               help="Starting learning rate. "
                    "Recommended settings: sgd = 1, adagrad = 0.1, "
@@ -539,10 +556,10 @@ def train_opts(parser):
               help="Send logs to this crayon server.")
     group.add('--exp', '-exp', type=str, default="",
               help="Name of the experiment for logging.")
-    # Use Tensorboard for visualization during training
+    # Use TensorboardX for visualization during training
     group.add('--tensorboard', '-tensorboard', action="store_true",
-              help="Use tensorboard for visualization during training. "
-                   "Must have the library tensorboard >= 1.14.")
+              help="Use tensorboardX for visualization during training. "
+                   "Must have the library tensorboardX.")
     group.add("--tensorboard_log_dir", "-tensorboard_log_dir",
               type=str, default="runs/onmt",
               help="Log directory for Tensorboard. "
@@ -561,12 +578,16 @@ def train_opts(parser):
               help="Using grayscale image can training "
                    "model faster and smaller")
 
+    # Option most relevant to keyphrase
+    group.add('--tgt_type', '-tgt_type', default='one2one',
+              choices=['one2one', 'no_sort', 'random', 'verbatim_append', 'verbatim_prepend', 'alphabetical', 'length', 'multiple'],
+              help="""Format of targets for model to learn/output, 'multiple' is used during test phase""")
 
 def translate_opts(parser):
     """ Translation / inference options """
     group = parser.add_argument_group('Model')
     group.add('--model', '-model', dest='models', metavar='MODEL',
-              nargs='+', type=str, default=[], required=True,
+              nargs='+', type=str, default=[], #required=True,
               help="Path to model .pt file(s). "
                    "Multiple models can be specified, "
                    "for ensemble decoding.")
@@ -583,9 +604,9 @@ def translate_opts(parser):
 
     group = parser.add_argument_group('Data')
     group.add('--data_type', '-data_type', default="text",
-              help="Type of the source input. Options: [text|img].")
+              help="Type of the source input. Options: [text|img|keyphrase].")
 
-    group.add('--src', '-src', required=True,
+    group.add('--src', '-src', #required=True,
               help="Source sequence to decode (one line per "
                    "sequence)")
     group.add('--src_dir', '-src_dir', default="",
@@ -609,6 +630,9 @@ def translate_opts(parser):
     group.add('--report_rouge', '-report_rouge', action='store_true',
               help="Report rouge 1/2/3/L/SU4 score after translation "
                    "call tools/test_rouge.py on command line")
+    group.add('--report_kpeval', '-report_kpeval', action='store_true',
+              help="Report keyphrase generation scores after translation "
+                   "call tools/kp_eval.py on command line")
     group.add('--report_time', '-report_time', action='store_true',
               help="Report some translation time metrics")
 
@@ -642,6 +666,13 @@ def translate_opts(parser):
               help='Maximum prediction length.')
     group.add('--max_sent_length', '-max_sent_length', action=DeprecateAction,
               help="Deprecated, use `-max_length` instead")
+    # configs for Keyphrase Decoding
+    group.add('--beam_terminate', '-beam_terminate', default='full',
+              choices=['topbeam', 'full'],
+              help="Termination condition on when beam search stops"
+                   "`topbeam` means the beam search stops once the topbeam is done (top score)"
+                   "`full` means all beams will be explored exhaustively until reaching max_length, default for one2one but would cause waste on one2seq kp generation"
+              )
 
     # Alpha and Beta values for Google Length + Coverage penalty
     # Described here: https://arxiv.org/pdf/1609.08144.pdf, Section 7
@@ -702,10 +733,6 @@ def translate_opts(parser):
     group = parser.add_argument_group('Efficiency')
     group.add('--batch_size', '-batch_size', type=int, default=30,
               help='Batch size')
-    group.add('--batch_type', '-batch_type', default='sents',
-              choices=["sents", "tokens"],
-              help="Batch grouping for batch_size. Standard "
-                   "is sents. Tokens will do dynamic batching")
     group.add('--gpu', '-gpu', type=int, default=-1,
               help="Device to run on")
 
@@ -726,6 +753,10 @@ def translate_opts(parser):
               help="Using grayscale image can training "
                    "model faster and smaller")
 
+    # Option most relevant to keyphrase
+    group.add('--tgt_type', '-tgt_type', default='one2one',
+              choices=['one2one', 'no_sort', 'random', 'verbatim', 'multiple'],
+              help="""Format of targets for model to learn/output""")
 
 # Copyright 2016 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be

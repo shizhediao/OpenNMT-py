@@ -13,10 +13,12 @@ from torchtext.data import Field, RawField
 from torchtext.vocab import Vocab
 from torchtext.data.utils import RandomShuffler
 
+from onmt.inputters import keyphrase_dataset
 from onmt.inputters.text_dataset import text_fields, TextMultiField
 from onmt.inputters.image_dataset import image_fields
 from onmt.inputters.audio_dataset import audio_fields
 from onmt.inputters.vec_dataset import vec_fields
+from onmt.inputters.keyphrase_dataset import keyphrase_fields, KeyphraseDataset, KeyphraseField, extra_special_tokens
 from onmt.utils.logging import logger
 # backwards compatibility
 from onmt.inputters.text_dataset import _feature_tokenize  # noqa: F401
@@ -94,16 +96,17 @@ def get_fields(
         the dataset example attributes.
     """
 
-    assert src_data_type in ['text', 'img', 'audio', 'vec'], \
+    assert src_data_type in ['text', 'img', 'audio', 'vec', 'keyphrase'], \
         "Data type not implemented"
-    assert not dynamic_dict or src_data_type == 'text', \
+    assert not dynamic_dict or src_data_type == 'text' or src_data_type == 'keyphrase', \
         'it is not possible to use dynamic_dict with non-text input'
     fields = {}
 
     fields_getters = {"text": text_fields,
                       "img": image_fields,
                       "audio": audio_fields,
-                      "vec": vec_fields}
+                      "vec": vec_fields,
+                      "keyphrase": text_fields}
 
     src_field_kwargs = {"n_feats": n_src_feats,
                         "include_lengths": True,
@@ -114,10 +117,14 @@ def get_fields(
 
     tgt_field_kwargs = {"n_feats": n_tgt_feats,
                         "include_lengths": False,
-                        "pad": pad, "bos": bos, "eos": eos,
+                        "pad": pad, "bos": bos, "eos": eos, "sep": keyphrase_dataset.SEP_token,
                         "truncate": tgt_truncate,
                         "base_name": "tgt"}
-    fields["tgt"] = fields_getters["text"](**tgt_field_kwargs)
+    # added by @memray, it might be smarter to add field_name to __init__ in the future
+    if src_data_type == "keyphrase":
+        fields['tgt'] = keyphrase_fields(**tgt_field_kwargs)
+    else:
+        fields['tgt'] = text_fields(**tgt_field_kwargs)
 
     indices = Field(use_vocab=False, dtype=torch.long, sequential=False)
     fields["indices"] = indices
@@ -135,6 +142,17 @@ def get_fields(
             use_vocab=False, dtype=torch.long,
             postprocessing=make_tgt, sequential=False)
         fields["alignment"] = align
+
+    # added by @memray, load some other meta information of each data example for keyphrase dataset
+    if src_data_type == 'keyphrase':
+        id = Field(use_vocab=False, dtype=torch.long, sequential=False)
+        fields["id"] = id
+
+        # for Orthogonal Regularization and Semantic Coverage
+        sep_indices = Field(
+            use_vocab=False, dtype=torch.long,
+            postprocessing=make_tgt, sequential=False)
+        fields["sep_indices"] = sep_indices
 
     return fields
 
@@ -177,11 +195,16 @@ def load_old_vocab(vocab, data_type="text", dynamic_dict=False):
         # doesn't change structure - don't return early.
         fields = vocab
         for base_name, vals in fields.items():
-            if ((base_name == 'src' and data_type == 'text') or
+            if ((base_name == 'src' and (data_type == 'text' or data_type == 'keyphrase')) or
                     base_name == 'tgt'):
-                assert not isinstance(vals[0][1], TextMultiField)
-                fields[base_name] = [(base_name, TextMultiField(
-                    vals[0][0], vals[0][1], vals[1:]))]
+                # assert not isinstance(vals[0][1], TextMultiField)
+                # changed by @memray, to solve the problem of cannot find vocab while loading dataset
+                if isinstance(vals[0][1], TextMultiField):
+                    fields[base_name] = [(base_name, TextMultiField(
+                        vals[0][0], vals[0][1].base_field, vals[1:]))]
+                elif isinstance(vals[0][1], KeyphraseField):
+                    fields[base_name] = [(base_name, KeyphraseField(
+                        vals[0][0], vals[0][1].base_field))]
 
     if _old_style_nesting(vocab):
         # Dict[str, List[Tuple[str, Field]]] -> List[Tuple[str, Field]]
@@ -285,6 +308,10 @@ def _build_field_vocab(field, counter, size_multiple=1, **kwargs):
     all_specials = [
         field.unk_token, field.pad_token, field.init_token, field.eos_token
     ]
+    # @memray
+    if "extra_special_tokens" in kwargs:
+        all_specials.extend(kwargs["extra_special_tokens"])
+        del kwargs["extra_special_tokens"]
     specials = [tok for tok in all_specials if tok is not None]
     field.vocab = field.vocab_cls(counter, specials=specials, **kwargs)
     if size_multiple > 1:
@@ -329,7 +356,8 @@ def _build_fields_vocab(fields, counters, data_type, share_vocab,
         counters,
         build_fv_args,
         size_multiple=vocab_size_multiple if not share_vocab else 1)
-    if data_type == 'text':
+    # @memray
+    if data_type == 'text' or data_type == 'keyphrase':
         src_multifield = fields["src"]
         _build_fv_from_multifield(
             src_multifield,
@@ -417,13 +445,21 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
                     all_data = [getattr(ex, name, None)]
                 else:
                     all_data = getattr(ex, name)
+                    # added by @memray, to support keyphrase task where tgt is a list of tokens
+                    if name=='tgt' and isinstance(all_data[0], list) and len(all_data[0]) > 0 and isinstance(all_data[0][0], list):
+                        all_data = [[p for d in all_data for p in d]]
                 for (sub_n, sub_f), fd in zip(
                         f_iter, all_data):
                     has_vocab = (sub_n == 'src' and src_vocab) or \
                                 (sub_n == 'tgt' and tgt_vocab)
                     if sub_f.sequential and not has_vocab:
                         val = fd
-                        counters[sub_n].update(val)
+                        # added by @memray, to support keyphrase task where tgt is a list of tokens
+                        if isinstance(val, list) and len(val) > 0 and isinstance(val[0], list):
+                            for v_ in val:
+                                counters[sub_n].update(v_)
+                        else:
+                            counters[sub_n].update(val)
 
         # Drop the none-using from memory but keep the last
         if i < len(train_dataset_files) - 1:
@@ -449,6 +485,8 @@ def _merge_field_vocabs(src_field, tgt_field, vocab_size, min_freq,
     # build_vocab with both the src and tgt data?
     specials = [tgt_field.unk_token, tgt_field.pad_token,
                 tgt_field.init_token, tgt_field.eos_token]
+    # added by @memray, but in a not elegant way
+    specials.extend(extra_special_tokens)
     merged = sum(
         [src_field.vocab.freqs, tgt_field.vocab.freqs], Counter()
     )
@@ -523,15 +561,22 @@ def batch_iter(data, batch_size, batch_size_fn=None, batch_size_multiple=1):
 
 
 def _pool(data, batch_size, batch_size_fn, batch_size_multiple,
-          sort_key, random_shuffler, pool_factor):
+          sort_key, random_shuffler, pool_factor, dataset=None):
     for p in torchtext.data.batch(
             data, batch_size * pool_factor,
             batch_size_fn=batch_size_fn):
+        # if it's keyphrase dataset, a preprocess to targets should act beforehand.
+        if dataset and isinstance(dataset, KeyphraseDataset):
+            p = keyphrase_dataset.process_multiple_tgts(p, dataset.tgt_type)
+        # @memray: split each big batch into final mini-batches
+        # batch_size_fn=max_tok_len() for train, counting real batch size (num_batch * max(#words in src/tgt))
+        # sort the data before splitting
         p_batch = list(batch_iter(
             sorted(p, key=sort_key),
             batch_size,
             batch_size_fn=batch_size_fn,
             batch_size_multiple=batch_size_multiple))
+        # shuffle samples in a minibatch before returning
         for b in random_shuffler(p_batch):
             yield b
 
@@ -567,7 +612,9 @@ class OrderedIterator(torchtext.data.Iterator):
                     self.batch_size_multiple,
                     self.sort_key,
                     self.random_shuffler,
-                    self.pool_factor)
+                    self.pool_factor,
+                    self.dataset # @memray
+                )
         else:
             self.batches = []
             for b in batch_iter(
@@ -575,7 +622,12 @@ class OrderedIterator(torchtext.data.Iterator):
                     self.batch_size,
                     batch_size_fn=self.batch_size_fn,
                     batch_size_multiple=self.batch_size_multiple):
-                self.batches.append(sorted(b, key=self.sort_key))
+                # if it's keyphrase dataset, a preprocess to targets should act beforehand.
+                if isinstance(self.dataset, KeyphraseDataset):
+                    b = keyphrase_dataset.process_multiple_tgts(b, self.dataset.tgt_type)
+                # @memray: to keep the original order of test data, only sort inside a batch (is it necessary? why not just sort it before feeding the model?)
+                # self.batches.append(sorted(b, key=self.sort_key))
+                self.batches.append(b)
 
     def __iter__(self):
         """
@@ -683,7 +735,7 @@ class DatasetLazyIter(object):
 
     def __init__(self, dataset_paths, fields, batch_size, batch_size_fn,
                  batch_size_multiple, device, is_train, pool_factor,
-                 repeat=True, num_batches_multiple=1, yield_raw_example=False):
+                 repeat=True, num_batches_multiple=1, yield_raw_example=False, opt=None):
         self._paths = dataset_paths
         self.fields = fields
         self.batch_size = batch_size
@@ -695,11 +747,17 @@ class DatasetLazyIter(object):
         self.num_batches_multiple = num_batches_multiple
         self.yield_raw_example = yield_raw_example
         self.pool_factor = pool_factor
+        self.opt = opt
 
     def _iter_dataset(self, path):
         logger.info('Loading dataset from %s' % path)
         cur_dataset = torch.load(path)
         logger.info('number of examples: %d' % len(cur_dataset))
+
+        # added by @memray, as Dataset is only instantiated here, having to use this plugin setter
+        if isinstance(cur_dataset, KeyphraseDataset):
+            cur_dataset.load_config(self.opt)
+
         cur_dataset.fields = self.fields
         cur_iter = OrderedIterator(
             dataset=cur_dataset,
@@ -714,6 +772,7 @@ class DatasetLazyIter(object):
             repeat=False,
             yield_raw_example=self.yield_raw_example
         )
+        # split into batches and process each batch (pad and numericalize, by field.process)
         for batch in cur_iter:
             self.dataset = cur_iter.dataset
             yield batch
@@ -791,6 +850,9 @@ def build_dataset_iter(corpus_type, fields, opt, is_train=True, multi=False):
         batch_size = opt.batch_size if is_train else opt.valid_batch_size
         batch_fn = max_tok_len \
             if is_train and opt.batch_type == "tokens" else None
+        # @memray
+        if opt.model_dtype == "keyphrase":
+            batch_fn = keyphrase_dataset.max_tok_len
         batch_size_multiple = 8 if opt.model_dtype == "fp16" else 1
 
     device = "cuda" if opt.gpu_ranks else "cpu"
@@ -806,7 +868,9 @@ def build_dataset_iter(corpus_type, fields, opt, is_train=True, multi=False):
         opt.pool_factor,
         repeat=not opt.single_pass,
         num_batches_multiple=max(opt.accum_count) * opt.world_size,
-        yield_raw_example=multi)
+        yield_raw_example=multi,
+        opt=opt
+    )
 
 
 def build_dataset_iter_multiple(train_shards, fields, opt):
