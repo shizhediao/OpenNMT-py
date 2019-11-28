@@ -1,7 +1,6 @@
 model_type: keyphrase
-memory: True
 
-data: data/keyphrase/meng17/kp20k
+data: data/keyphrase/meng17/kp20k_small
 save_checkpoint_steps: 10000
 keep_checkpoint: 40
 seed: 3435
@@ -28,7 +27,7 @@ max_generator_batches: 2
 accum_count: 4
 
 # batch_size is actually: num_example * max(#word in src/tgt)
-batch_size: 32
+batch_size: 4096
 #batch_size: 8192
 #batch_size: 24576
 valid_batch_size: 256

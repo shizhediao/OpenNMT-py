@@ -2,6 +2,7 @@
 This file is for models creation, which consults options
 and creates each encoder and decoder accordingly.
 """
+import glob
 import re
 import torch
 import torch.nn as nn
@@ -117,6 +118,26 @@ def load_test_model(opt, model_path=None):
     model.generator.eval()
     return fields, model, model_opt
 
+def load_all_docs(model_opt, fields, device):
+    print("loading all docs...")
+    dataset_paths = list(sorted(glob.glob(model_opt.data + '.' + 'train.[0-9]*.pt')))
+    dataset_paths += (list(sorted(glob.glob(model_opt.data + '.' + 'valid.[0-9]*.pt'))))
+    if not dataset_paths:
+        raise ValueError('Training data %s not found' % model_opt.data)
+    all_docs = None
+    for dataset in dataset_paths:
+        logger.info('Loading memory dataset from %s' % dataset)
+        cur_dataset = torch.load(dataset)
+        logger.info('number of examples: %d' % len(cur_dataset))
+        src_field = fields['src']
+        shard_docs = [getattr(x, 'src') for x in cur_dataset]
+        shard_docs_id = src_field.process(shard_docs, device=device)[0]
+        if all_docs is None:
+            all_docs = shard_docs_id
+        else:
+            all_docs = torch.cat((all_docs, shard_docs_id), 1)
+        logger.info('Finish loading memory dataset from %s' % dataset)
+    return all_docs
 
 def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
     """Build a model from opts.
@@ -148,6 +169,8 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
             or model_opt.model_type == "keyphrase":
         src_field = fields["src"]
         src_emb = build_embeddings(model_opt, src_field)
+        embedding_a = build_embeddings(model_opt, src_field)
+        embedding_c = build_embeddings(model_opt, src_field)
     else:
         src_emb = None
 
@@ -175,7 +198,24 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         device = torch.device("cuda")
     elif not gpu:
         device = torch.device("cpu")
-    model = onmt.models.NMTModel(encoder, decoder)
+    #Build memory @shizhe
+    if model_opt.model_type == "keyphrase":
+        if model_opt.memory == False:
+            logger.info("Do not use memory")
+            model = onmt.models.NMTModel(encoder, decoder)
+        elif model_opt.memory == True:
+            logger.info("Do use memory")
+            all_docs = load_all_docs(model_opt, fields, device)
+            logger.info("finish load all documents")
+            model = onmt.models.NMTModel(encoder, decoder, all_docs, model_opt, embedding_a, src_emb, embedding_c)
+            del all_docs
+            logger.info("start cleaning gpu cache")
+            torch.cuda.empty_cache()
+            logger.info("end cleaning gpu cache")
+        else:
+            logger.info("NO MODEL!!!")
+    else:
+        model = onmt.models.NMTModel(encoder, decoder)
 
     # Build Generator.
     if not model_opt.copy_attn:

@@ -16,4 +16,4 @@ lower: 'true'
 filter_valid: 'false'
 
 report_every: 1000
-log_file: data/keyphrase/kp20k/preprocess.small.log
+log_file: data/keyphrase/meng17/preprocess.small.log

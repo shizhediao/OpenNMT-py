@@ -582,6 +582,9 @@ def train_opts(parser):
     group.add('--tgt_type', '-tgt_type', default='one2one',
               choices=['one2one', 'no_sort', 'random', 'verbatim_append', 'verbatim_prepend', 'alphabetical', 'length', 'multiple'],
               help="""Format of targets for model to learn/output, 'multiple' is used during test phase""")
+    # @shizhe
+    group.add('--memory', '-memory', action='store_true',
+              help="true to use memory, false to not use memory")
 
 def translate_opts(parser):
     """ Translation / inference options """

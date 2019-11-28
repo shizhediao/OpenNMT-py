@@ -118,9 +118,9 @@ class TransformerEncoder(EncoderBase):
         """See :func:`EncoderBase.forward()`"""
         self._check_args(src, lengths)
 
-        emb = self.embeddings(src)
+        emb = self.embeddings(src)  #src[300,13,1]  emb[300,13,512]
 
-        out = emb.transpose(0, 1).contiguous()
+        out = emb.transpose(0, 1).contiguous() #[13,300,512]
         mask = ~sequence_mask(lengths).unsqueeze(1)
         # Run the forward pass of every layer of the tranformer.
         for layer in self.transformer:

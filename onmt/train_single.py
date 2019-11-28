@@ -27,12 +27,18 @@ def _check_save_model_path(opt):
 def _tally_parameters(model):
     enc = 0
     dec = 0
+    word_memory = 0
+    cal_word_memory = 0
     for name, param in model.named_parameters():
         if 'encoder' in name:
             enc += param.nelement()
+        elif "all_docs" in name:
+            word_memory += param.nelement()
+        elif "cal_word_memory" in name:
+            cal_word_memory += param.nelement()
         else:
             dec += param.nelement()
-    return enc + dec, enc, dec
+    return enc + dec + word_memory + cal_word_memory, enc, dec, word_memory, cal_word_memory
 
 
 def configure_process(opt, device_id):
@@ -100,9 +106,11 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
 
     # Build model.
     model = build_model(model_opt, opt, fields, checkpoint)
-    n_params, enc, dec = _tally_parameters(model)
+    n_params, enc, dec, word_memory, cal_word_memory = _tally_parameters(model)
     logger.info('encoder: %d' % enc)
     logger.info('decoder: %d' % dec)
+    logger.info('word_memory: %d' % word_memory)
+    logger.info('cal_word_memory: %d' % cal_word_memory)
     logger.info('* number of parameters: %d' % n_params)
     _check_save_model_path(opt)
 
