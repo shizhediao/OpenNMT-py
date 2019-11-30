@@ -120,8 +120,8 @@ def load_test_model(opt, model_path=None):
 
 def load_all_docs(model_opt, fields, device):
     print("loading all docs...")
-    dataset_paths = list(sorted(glob.glob(model_opt.data + '.' + 'train.[0-9]*.pt')))
-    dataset_paths += (list(sorted(glob.glob(model_opt.data + '.' + 'valid.[0-9]*.pt'))))
+    #dataset_paths = list(sorted(glob.glob(model_opt.data + '.' + 'train.[0-9]*.pt')))
+    dataset_paths = (list(sorted(glob.glob(model_opt.data + '.' + 'valid.[0-9]*.pt'))))
     if not dataset_paths:
         raise ValueError('Training data %s not found' % model_opt.data)
     all_docs = None
@@ -169,7 +169,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
             or model_opt.model_type == "keyphrase":
         src_field = fields["src"]
         src_emb = build_embeddings(model_opt, src_field)
-        embedding_a = build_embeddings(model_opt, src_field)
+        embedding_a = src_emb
         embedding_c = build_embeddings(model_opt, src_field)
     else:
         src_emb = None

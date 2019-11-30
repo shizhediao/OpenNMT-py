@@ -1,4 +1,5 @@
 model_type: keyphrase
+memory: True
 
 data: data/keyphrase/meng17/kp20k_small
 save_checkpoint_steps: 10000

@@ -20,42 +20,45 @@ class word_memory(nn.Module):
             word_seq: [300,13,1] [seq_len, batch_size, 1]
             all_docs: [300,1100,1] [seq_len, all_docs_num, 1]
         '''
-        slice_num = 400
+        # ci = torch.mean(self.word_embedding_a(all_docs), 0) #[300,1100,512]
+        # mi = torch.mean(self.word_embedding_c(all_docs), 0) #[300,1100,512]
+
+
+       # @shizhe.  success by slicing
+
+        slice_num = 40
         u = torch.mean(self.word_embedding_b(word_seq), 0) #[13,512]       [300,13,512] [seq_len, batch_size, emb_dim] -> [13,512]
-        #ci = torch.mean(self.word_embedding_a(all_docs), 0) #[300,1100,512]
-        #mi = torch.mean(self.word_embedding_c(all_docs), 0) #[300,1100,512]
         all_docs = all_docs.permute(1, 0, 2)   #[1100,300,1]
         c = torch.mean(self.word_embedding_a(all_docs[0*slice_num:1*slice_num]), 1) #[4000, 512]  [1100,300,1] - > [1100,300,512] -> [1100,512]
         m = torch.mean(self.word_embedding_a(all_docs[0*slice_num:1*slice_num]), 1) #[4000, 512]  [1100,300,1] - > [1100,300,512] -> [1100,512]
         num_loop = math.ceil(all_docs.shape[0] / slice_num)
         for i in range(1, num_loop):
-            ci = self.word_embedding_a(all_docs[i*slice_num:(i+1)*slice_num]) #all_docs[1100,300,1] ->[slice_num,300,1] -> emb = [slice_num,300,512]
-            mi = self.word_embedding_c(all_docs[i*slice_num:(i+1)*slice_num]) #all_docs[1100,300,1] ->[slice_num,300,1] -> emb = [slice_num,300,512]
+            #print("i: ", i)
+            doci = all_docs[i * slice_num:(i + 1) * slice_num]
+            ci = self.word_embedding_a(doci) #all_docs[1100,300,1] ->[slice_num,300,1] -> emb = [slice_num,300,512]
+            mi = self.word_embedding_c(doci) #all_docs[1100,300,1] ->[slice_num,300,1] -> emb = [slice_num,300,512]
             ci = torch.mean(ci, 1)  #[slice_num,512]
             mi = torch.mean(mi, 1)  #[slice_num,512]
             c = torch.cat([c, ci])
             m = torch.cat([m, mi])
-            del ci,mi
-            torch.cuda.empty_cache()
+            del ci,mi,doci
+            #torch.cuda.empty_cache()
+
         # for i in range(1, all_docs.shape[0]):
         #     ci = torch.add(ci, self.word_embedding_a(all_docs[i].unsqueeze(2)))
         #     mi = torch.add(mi, self.word_embedding_c(all_docs[i].unsqueeze(2)))
         # ci = (ci / all_docs.shape[0]).squeeze(1)
         # mi = (mi / all_docs.shape[0]).squeeze(1)
 
-        # get sentence embedding by average
+        #get sentence embedding by average
         # u = torch.mean(u,0) #[13,512]
         # c = torch.mean(c,0) #[1100,512]
         # m = torch.mean(m,0) #[1100,512]
 
         m = m.permute(1,0) #[1100, 512] -  [512,1100]
         p = F.softmax(torch.matmul(u, m), dim=1) #[13,1100]
-        # tmp_word_mask_metrix = torch.clamp(word_mask_metrix, 0, 1)
-        #
-        # exp_u = torch.exp(u)
-        # delta_exp_u = torch.mul(exp_u, tmp_word_mask_metrix)
-        #sum_delta_exp_u = torch.stack([torch.sum(delta_exp_u, 2)] * delta_exp_u.shape[2], 2)
-        #p = torch.div(delta_exp_u, sum_delta_exp_u + 1e-10)
+
+
         # print('attention shape', attention.shape)
         # p (batch_size, character_seq_len, word_seq_len, hidden_state)
         #p = torch.stack([p] * ci.shape[1], 2) #[13,1100, 512]
@@ -81,8 +84,8 @@ class NMTModel(nn.Module):
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.all_docs = all_docs
-        self.cal_word_memory = word_memory(embedding_a, embedding_b, embedding_c)
+        #self.all_docs = all_docs
+        #self.cal_word_memory = word_memory(embedding_a, embedding_b, embedding_c)
 
     def forward(self, src, tgt, lengths, bptt=False):
         """Forward propagate a `src` and `tgt` pair for training.
@@ -109,11 +112,17 @@ class NMTModel(nn.Module):
         # tgt [5,13,1] [tgt_len, batch, 1]
         #enc_state is the encoding of src [300,13,512]  memory_bank is the hidden state of last layer [300,13,512] lengths [13]
         enc_state, memory_bank, lengths = self.encoder(src, lengths)
-
+        '''
+        @shizhe failed try
+        docs = self.all_docs
+        docs_lengths = torch.ones(docs.shape[1])*300
+        docs_lengths = docs_lengths.to(lengths.device)
+        enc_state, memory_bank, lengths = self.encoder(docs, docs_lengths)
+        '''
         #******************@shizhe**************
-        if self.all_docs is not None:
-            o = self.cal_word_memory(src, self.all_docs)  #[13,512]  [batch_size, emb_dim]
-            memory_bank = torch.add(memory_bank, o)
+        # if self.all_docs is not None:
+        #     o = self.cal_word_memory(src, self.all_docs)  #[13,512]  [batch_size, emb_dim]
+        #     memory_bank = torch.add(memory_bank, o)
         #******************@shizhe**************
         if bptt is False:
             self.decoder.init_state(src, memory_bank, enc_state)
